@@ -518,6 +518,19 @@ func (i *iptablesManager) InsertEgressRoutingRules(server string, egressInfo mod
 	}
 	egressGwRoutes := []ruleInfo{}
 	fwdJumpDedupe := make(map[string]struct{})
+	// Virtual NAT ranges on this routing node share chains. Clear them once for
+	// the whole configuration, then append each range's rules to those chains.
+	for _, egressGwRange := range egressInfo.EgressGWCfg.RangesWithMetric {
+		if _, shouldApply := shouldApplyVirtualNat(egressGwRange); shouldApply {
+			if err := i.removeVirtualNATRules(egressInfo.EgressID, true); err != nil {
+				return fmt.Errorf("failed to reset IPv4 virtual NAT chains: %w", err)
+			}
+			if err := i.removeVirtualNATRules(egressInfo.EgressID, false); err != nil {
+				return fmt.Errorf("failed to reset IPv6 virtual NAT chains: %w", err)
+			}
+			break
+		}
+	}
 	for _, egressGwRange := range egressInfo.EgressGWCfg.RangesWithMetric {
 		// Check if virtual NAT should be applied first (before checking Nat flag)
 		// This ensures VNAT is applied when switching from direct to virtual mode
@@ -1793,9 +1806,6 @@ func (i *iptablesManager) applyVirtualNATRules(egressID string, vnatInfo *virtua
 
 	// Calculate real range window (same prefix length as virtual range)
 	realWindow := getRealRangeWindow(vnatInfo.realRange, vnatInfo.virtualRange)
-
-	// Delete existing chains if they exist (for idempotency)
-	i.deleteVNATChains(client, preroutingChain, postroutingChain, isIPv4)
 
 	// Create per-egress NAT chains (filter FORWARD jump is separate; see InsertEgressRoutingRules).
 	if err := createChain(client, defaultNatTable, preroutingChain); err != nil {
